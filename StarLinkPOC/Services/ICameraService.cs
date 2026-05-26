@@ -16,7 +16,12 @@ namespace StarLinkPOC.Services
         /// <summary>Raw VLC log lines (Warning/Error level) for diagnostics.</summary>
         event EventHandler<string>? VlcLogReceived;
 
+        bool IsRecording { get; }
+
         Task ConnectAsync(CameraConfig config);
         void Disconnect();
+
+        Task StartRecordingAsync(CameraConfig config, string recordFilePath);
+        void StopRecording();
     }
 }

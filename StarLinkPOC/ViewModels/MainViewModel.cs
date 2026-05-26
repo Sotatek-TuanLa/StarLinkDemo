@@ -123,6 +123,36 @@ namespace StarLinkPOC.ViewModels
         }
 
         // ──────────────────────────────────────────────────────────────
+        //  Recording State
+        // ──────────────────────────────────────────────────────────────
+
+        private bool _isRecording;
+        public bool IsRecording
+        {
+            get => _isRecording;
+            private set
+            {
+                if (SetProperty(ref _isRecording, value))
+                    OnPropertyChanged(nameof(IsNotRecording));
+            }
+        }
+        public bool IsNotRecording => !_isRecording;
+
+        private string _recordingDirectory = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyVideos);
+        public string RecordingDirectory
+        {
+            get => _recordingDirectory;
+            set => SetProperty(ref _recordingDirectory, value);
+        }
+
+        private string _currentRecordingFile = string.Empty;
+        public string CurrentRecordingFile
+        {
+            get => _currentRecordingFile;
+            private set => SetProperty(ref _currentRecordingFile, value);
+        }
+
+        // ──────────────────────────────────────────────────────────────
         //  Diagnostics Log
         // ──────────────────────────────────────────────────────────────
 
@@ -143,6 +173,8 @@ namespace StarLinkPOC.ViewModels
 
         public IAsyncRelayCommand ConnectCommand { get; }
         public IRelayCommand DisconnectCommand { get; }
+        public IAsyncRelayCommand StartRecordingCommand { get; }
+        public IAsyncRelayCommand StopRecordingCommand { get; }
 
         // ──────────────────────────────────────────────────────────────
         //  Constructor
@@ -164,6 +196,14 @@ namespace StarLinkPOC.ViewModels
             DisconnectCommand = new RelayCommand(
                 ExecuteDisconnect,
                 () => IsConnected || IsConnecting);
+
+            StartRecordingCommand = new AsyncRelayCommand(
+                ExecuteStartRecordingAsync,
+                () => IsConnected && !IsRecording && !IsConnecting);
+
+            StopRecordingCommand = new AsyncRelayCommand(
+                ExecuteStopRecordingAsync,
+                () => IsRecording);
 
             ClearDiagnosticsCommand = new RelayCommand(() =>
             {
@@ -218,12 +258,91 @@ namespace StarLinkPOC.ViewModels
 
         private void ExecuteDisconnect()
         {
+            if (IsRecording)
+            {
+                AppendLog($"[RECORD] Disconnected, recording ended. File saved: {CurrentRecordingFile}");
+                IsRecording = false;
+                CurrentRecordingFile = string.Empty;
+            }
+
             _cameraService.Disconnect();
             IsConnected  = false;
             IsConnecting = false;
             ResolvedUrl  = string.Empty;
             SetStatus("Disconnected", Brushes.Gray);
             NotifyCommands();
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        //  Recording Control Actions (Non-Interruptive Dual Player)
+        // ──────────────────────────────────────────────────────────────
+
+        private async Task ExecuteStartRecordingAsync()
+        {
+            if (!IsConnected || IsRecording) return;
+
+            IsRecording = true;
+            SetStatus($"● Recording  —  {CameraHost}", Brushes.Red);
+            NotifyCommands();
+
+            try
+            {
+                // Ensure target directory exists
+                if (!System.IO.Directory.Exists(RecordingDirectory))
+                {
+                    System.IO.Directory.CreateDirectory(RecordingDirectory);
+                }
+
+                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var fileName = $"CameraRecord_{timestamp}.ts";
+                CurrentRecordingFile = System.IO.Path.Combine(RecordingDirectory, fileName);
+
+                AppendLog($"[RECORD] Starting background capture to: {CurrentRecordingFile}");
+
+                var config = new CameraConfig
+                {
+                    Host       = CameraHost.Trim(),
+                    Username   = Username.Trim(),
+                    Password   = Password,
+                    Port       = Port,
+                    StreamPath = StreamPath.Trim()
+                };
+
+                await _cameraService.StartRecordingAsync(config, CurrentRecordingFile);
+            }
+            catch (Exception ex)
+            {
+                IsRecording  = false;
+                CurrentRecordingFile = string.Empty;
+                SetStatus($"⚠ {ex.Message}", Brushes.OrangeRed);
+                AppendLog($"[RECORD] ERROR starting capture: {ex.Message}");
+                OnPropertyChanged(nameof(HasDiagnostics));
+                NotifyCommands();
+            }
+        }
+
+        private Task ExecuteStopRecordingAsync()
+        {
+            if (!IsRecording) return Task.CompletedTask;
+
+            AppendLog($"[RECORD] Stopping background capture. File saved: {CurrentRecordingFile}");
+            CurrentRecordingFile = string.Empty;
+            IsRecording = false;
+            SetStatus($"● Live  —  {CameraHost}", Brushes.LimeGreen);
+            NotifyCommands();
+
+            try
+            {
+                _cameraService.StopRecording();
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[RECORD] ERROR stopping capture: {ex.Message}");
+                OnPropertyChanged(nameof(HasDiagnostics));
+                NotifyCommands();
+            }
+
+            return Task.CompletedTask;
         }
 
         // ──────────────────────────────────────────────────────────────
@@ -234,14 +353,30 @@ namespace StarLinkPOC.ViewModels
         {
             IsConnecting = false;
             IsConnected  = true;
-            SetStatus($"● Live  —  {CameraHost}", Brushes.LimeGreen);
-            AppendLog("Stream playing successfully.");
+            
+            if (IsRecording)
+            {
+                SetStatus($"● Recording  —  {CameraHost}", Brushes.Red);
+            }
+            else
+            {
+                SetStatus($"● Live  —  {CameraHost}", Brushes.LimeGreen);
+                AppendLog("Stream playing successfully.");
+            }
+
             OnPropertyChanged(nameof(HasDiagnostics));
             NotifyCommands();
         });
 
         private void OnStreamStopped(object? sender, EventArgs e) => Dispatch(() =>
         {
+            if (IsRecording)
+            {
+                AppendLog($"[RECORD] Stream stopped, recording ended. File saved: {CurrentRecordingFile}");
+                IsRecording = false;
+                CurrentRecordingFile = string.Empty;
+            }
+
             if (!IsConnected) return;
             IsConnected  = false;
             IsConnecting = false;
@@ -253,6 +388,13 @@ namespace StarLinkPOC.ViewModels
 
         private void OnStreamError(object? sender, string message) => Dispatch(() =>
         {
+            if (IsRecording)
+            {
+                AppendLog($"[RECORD] Stream error, recording ended. File saved: {CurrentRecordingFile}");
+                IsRecording = false;
+                CurrentRecordingFile = string.Empty;
+            }
+
             IsConnecting = false;
             IsConnected  = false;
             SetStatus("⚠ Stream error — see Diagnostics below", Brushes.OrangeRed);
@@ -304,6 +446,8 @@ namespace StarLinkPOC.ViewModels
         {
             ConnectCommand.NotifyCanExecuteChanged();
             DisconnectCommand.NotifyCanExecuteChanged();
+            StartRecordingCommand.NotifyCanExecuteChanged();
+            StopRecordingCommand.NotifyCanExecuteChanged();
         }
     }
 

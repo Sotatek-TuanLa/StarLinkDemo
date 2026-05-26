@@ -56,6 +56,24 @@ namespace StarLinkPOC
         }
 
         // ──────────────────────────────────────────────────────────────
+        //  Recording Folder Browser
+        // ──────────────────────────────────────────────────────────────
+
+        private void BtnBrowseFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = "Select Recordings Directory",
+                InitialDirectory = _viewModel.RecordingDirectory
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                _viewModel.RecordingDirectory = dialog.FolderName;
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────
         //  Cleanup on close — stop stream and release LibVLC resources
         // ──────────────────────────────────────────────────────────────
 

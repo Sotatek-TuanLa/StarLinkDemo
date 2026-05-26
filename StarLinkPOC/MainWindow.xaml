@@ -352,6 +352,74 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- ── Recording ────────────────────────────────── -->
+                    <TextBlock Text="LOCAL RECORDING" Style="{StaticResource FieldLabel}" Margin="0,12,0,8"/>
+                    <Border Background="{StaticResource BgCard}" CornerRadius="8" Padding="14,12">
+                        <StackPanel>
+                            <!-- Folder Selection -->
+                            <TextBlock Text="RECORDINGS DIRECTORY" FontSize="9" FontWeight="SemiBold"
+                                       FontFamily="Segoe UI" Foreground="{StaticResource TextMuted}"
+                                       Margin="0,0,0,4"/>
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="36"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Style="{StaticResource InputBox}" Margin="0"
+                                         Text="{Binding RecordingDirectory, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Directory path to save .ts files"/>
+                                <Button Grid.Column="2" Content="..." Style="{StaticResource BtnGhost}"
+                                        Click="BtnBrowseFolder_Click" Height="28" Padding="0" VerticalAlignment="Center"
+                                        ToolTip="Browse for recording folder"/>
+                            </Grid>
+
+                            <!-- Start/Stop Recording Buttons -->
+                            <Grid>
+                                <!-- Start Recording Button -->
+                                <Button Content="🔴  Start Recording"
+                                        Style="{StaticResource BtnPrimary}" Margin="0"
+                                        Command="{Binding StartRecordingCommand}"
+                                        Visibility="{Binding IsNotRecording, Converter={StaticResource BoolToVis}}"/>
+
+                                <!-- Stop Recording Button -->
+                                <Button Content="⬛  Stop Recording"
+                                        Style="{StaticResource BtnDanger}" Margin="0"
+                                        Command="{Binding StopRecordingCommand}"
+                                        Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}"/>
+                            </Grid>
+
+                            <!-- Current recording file status indicator -->
+                            <StackPanel Margin="0,8,0,0" Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <!-- Small pulsing recording dot -->
+                                    <Ellipse Width="6" Height="6" Fill="#FF4C4C" Margin="0,0,6,0" VerticalAlignment="Center">
+                                        <Ellipse.Style>
+                                            <Style TargetType="Ellipse">
+                                                <Style.Triggers>
+                                                    <EventTrigger RoutedEvent="Loaded">
+                                                        <BeginStoryboard>
+                                                            <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                                 From="1" To="0.2" Duration="0:0:0.6"/>
+                                                            </Storyboard>
+                                                        </BeginStoryboard>
+                                                    </EventTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Ellipse.Style>
+                                    </Ellipse>
+                                    <TextBlock Text="RECORDING TO FILE:" FontSize="9" FontWeight="Bold"
+                                               FontFamily="Segoe UI" Foreground="#FF6B6B" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBox Text="{Binding CurrentRecordingFile, Mode=OneWay}"
+                                         IsReadOnly="True" Background="Transparent" BorderThickness="0"
+                                         FontSize="9" FontFamily="Consolas" Foreground="{StaticResource TextMuted}"
+                                         TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
                     <!-- ── Diagnostics Log ──────────────────────────── -->
                     <Border Background="{StaticResource BgCard}" CornerRadius="8"
                             Padding="12,10" Margin="0,12,0,0"

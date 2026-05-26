@@ -10,6 +10,8 @@ namespace StarLinkPOC.Services
     public class CameraService : ICameraService, IDisposable
     {
         private Media? _currentMedia;
+        private MediaPlayer? _recordMediaPlayer;
+        private Media? _recordMedia;
         private bool _disposed;
 
         // ──────────────────────────────────────────────────────────────
@@ -33,6 +35,7 @@ namespace StarLinkPOC.Services
         public LibVLC LibVLC { get; }
         public MediaPlayer MediaPlayer { get; }
         public bool IsConnected { get; private set; }
+        public bool IsRecording { get; private set; }
 
         // ──────────────────────────────────────────────────────────────
         //  Constructor
@@ -67,12 +70,9 @@ namespace StarLinkPOC.Services
                 throw new InvalidOperationException("Password must not be empty.");
 
             // ── Step 1: TCP reachability check — soft warning only ────
-            // We log whether port 554 is open but we do NOT abort; VLC will
-            // attempt regardless and surface a richer error if it fails.
             bool tcpOk = await TryTcpConnectAsync(config.Host, config.Port);
             if (!tcpOk)
             {
-                // Fire as a log warning — NOT as a StreamError (don't stop yet)
                 VlcLogReceived?.Invoke(this,
                     $"[WARN] TCP port {config.Port} on {config.Host} did not respond in 5 s. " +
                     "Camera may use UDP or a firewall is filtering the port. Trying VLC anyway…");
@@ -95,8 +95,6 @@ namespace StarLinkPOC.Services
 
             _currentMedia = await Task.Run(() =>
             {
-                // IMPORTANT: use string + FromType.FromLocation, NOT new Uri()
-                // Uri() sanitises/re-encodes query strings, breaking Dahua paths
                 var media = new Media(LibVLC, rtspUrl, FromType.FromLocation);
 
                 media.AddOption(":network-caching=500");
@@ -104,7 +102,6 @@ namespace StarLinkPOC.Services
                 media.AddOption(":rtsp-timeout=10");
                 media.AddOption(":clock-jitter=0");
                 media.AddOption(":clock-synchro=0");
-                // Disable GPU hw decode — fixes black frames on many drivers
                 media.AddOption(":avcodec-hw=none");
 
                 return media;
@@ -115,6 +112,8 @@ namespace StarLinkPOC.Services
 
         public void Disconnect()
         {
+            StopRecording();
+
             if (MediaPlayer.IsPlaying)
                 MediaPlayer.Stop();
 
@@ -124,13 +123,68 @@ namespace StarLinkPOC.Services
         }
 
         // ──────────────────────────────────────────────────────────────
+        //  Recording API (Dual Player Mode)
+        // ──────────────────────────────────────────────────────────────
+
+        public async Task StartRecordingAsync(CameraConfig config, string recordFilePath)
+        {
+            if (string.IsNullOrWhiteSpace(config.Host))
+                throw new InvalidOperationException("Camera Host / IP must not be empty.");
+            if (string.IsNullOrWhiteSpace(config.Password))
+                throw new InvalidOperationException("Password must not be empty.");
+
+            StopRecording();
+
+            IsRecording = true;
+            var rtspUrl = config.BuildRtspUrl();
+
+            _recordMediaPlayer = new MediaPlayer(LibVLC);
+
+            _recordMedia = await Task.Run(() =>
+            {
+                var media = new Media(LibVLC, rtspUrl, FromType.FromLocation);
+
+                media.AddOption(":network-caching=500");
+                media.AddOption(":rtsp-tcp");
+                media.AddOption(":rtsp-timeout=10");
+                media.AddOption(":clock-jitter=0");
+                media.AddOption(":clock-synchro=0");
+                media.AddOption(":avcodec-hw=none");
+
+                // Convert backslashes to forward slashes for VLC parsing safety, and escape single quotes
+                var cleanPath = recordFilePath.Replace("\\", "/").Replace("'", "\\'");
+                media.AddOption($":sout=#std{{access=file,mux=ts,dst='{cleanPath}'}}");
+                media.AddOption(":sout-keep");
+                media.AddOption(":sout-all");
+
+                return media;
+            });
+
+            _recordMediaPlayer.Play(_recordMedia);
+        }
+
+        public void StopRecording()
+        {
+            if (!IsRecording) return;
+            IsRecording = false;
+
+            if (_recordMediaPlayer != null)
+            {
+                if (_recordMediaPlayer.IsPlaying)
+                    _recordMediaPlayer.Stop();
+
+                _recordMediaPlayer.Dispose();
+                _recordMediaPlayer = null;
+            }
+
+            _recordMedia?.Dispose();
+            _recordMedia = null;
+        }
+
+        // ──────────────────────────────────────────────────────────────
         //  Helpers
         // ──────────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Tries to open a TCP socket to host:port within 3 seconds.
-        /// Gives early feedback before VLC's own (silent) timeout fires.
-        /// </summary>
         private static async Task<bool> TryTcpConnectAsync(string host, int port)
         {
             try
@@ -152,7 +206,6 @@ namespace StarLinkPOC.Services
 
         private void OnVlcLog(object? sender, LogEventArgs e)
         {
-            // Forward Warning + Error to UI; ignore Debug/Info noise
             if (e.Level >= LogLevel.Warning)
                 VlcLogReceived?.Invoke(this, $"[VLC {e.Level}] {e.Message}");
         }
