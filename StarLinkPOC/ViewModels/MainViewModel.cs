@@ -11,7 +11,8 @@ namespace StarLinkPOC.ViewModels
 {
     public class MainViewModel : ViewModelBase
     {
-        private readonly ICameraService _cameraService;
+        private readonly ICameraService         _cameraService;
+        private readonly IYoloDetectionService  _detectionService;
 
         // ──────────────────────────────────────────────────────────────
         //  Stream Path Presets
@@ -168,6 +169,43 @@ namespace StarLinkPOC.ViewModels
         public IRelayCommand ClearDiagnosticsCommand { get; }
 
         // ──────────────────────────────────────────────────────────────
+        //  AI Detection State
+        // ──────────────────────────────────────────────────────────────
+
+        private string _modelPath = string.Empty;
+        public string ModelPath
+        {
+            get => _modelPath;
+            set
+            {
+                if (SetProperty(ref _modelPath, value))
+                    _detectionService.ModelPath = value;
+            }
+        }
+
+        private bool _isDetecting;
+        public bool IsDetecting
+        {
+            get => _isDetecting;
+            private set
+            {
+                if (SetProperty(ref _isDetecting, value))
+                    OnPropertyChanged(nameof(IsNotDetecting));
+            }
+        }
+        public bool IsNotDetecting => !_isDetecting;
+
+        private int _detectionCount;
+        public int DetectionCount
+        {
+            get => _detectionCount;
+            private set => SetProperty(ref _detectionCount, value);
+        }
+
+        /// <summary>Raised when new detection results are ready — code-behind draws them.</summary>
+        public event EventHandler<List<Detection>>? DetectionsReady;
+
+        // ──────────────────────────────────────────────────────────────
         //  Commands
         // ──────────────────────────────────────────────────────────────
 
@@ -175,14 +213,20 @@ namespace StarLinkPOC.ViewModels
         public IRelayCommand DisconnectCommand { get; }
         public IAsyncRelayCommand StartRecordingCommand { get; }
         public IAsyncRelayCommand StopRecordingCommand { get; }
+        public IAsyncRelayCommand StartDetectionCommand { get; }
+        public IRelayCommand      StopDetectionCommand  { get; }
 
         // ──────────────────────────────────────────────────────────────
         //  Constructor
         // ──────────────────────────────────────────────────────────────
 
-        public MainViewModel(ICameraService cameraService)
+        public MainViewModel(ICameraService cameraService, IYoloDetectionService detectionService)
         {
-            _cameraService = cameraService;
+            _cameraService     = cameraService;
+            _detectionService  = detectionService;
+
+            _detectionService.DetectionsUpdated += OnDetectionsUpdated;
+            _detectionService.StatusMessage     += OnDetectionStatus;
 
             _cameraService.StreamStarted  += OnStreamStarted;
             _cameraService.StreamStopped  += OnStreamStopped;
@@ -204,6 +248,14 @@ namespace StarLinkPOC.ViewModels
             StopRecordingCommand = new AsyncRelayCommand(
                 ExecuteStopRecordingAsync,
                 () => IsRecording);
+
+            StartDetectionCommand = new AsyncRelayCommand(
+                ExecuteStartDetectionAsync,
+                () => IsConnected && !IsDetecting && !string.IsNullOrWhiteSpace(ModelPath));
+
+            StopDetectionCommand = new RelayCommand(
+                ExecuteStopDetection,
+                () => IsDetecting);
 
             ClearDiagnosticsCommand = new RelayCommand(() =>
             {
@@ -258,6 +310,8 @@ namespace StarLinkPOC.ViewModels
 
         private void ExecuteDisconnect()
         {
+            if (IsDetecting) ExecuteStopDetection();
+
             if (IsRecording)
             {
                 AppendLog($"[RECORD] Disconnected, recording ended. File saved: {CurrentRecordingFile}");
@@ -270,6 +324,50 @@ namespace StarLinkPOC.ViewModels
             IsConnecting = false;
             ResolvedUrl  = string.Empty;
             SetStatus("Disconnected", Brushes.Gray);
+            NotifyCommands();
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        //  AI Detection Commands
+        // ──────────────────────────────────────────────────────────────
+
+        private async Task ExecuteStartDetectionAsync()
+        {
+            if (!IsConnected || IsDetecting) return;
+
+            IsDetecting = true;
+            NotifyCommands();
+            AppendLog($"[AI] Loading model: {System.IO.Path.GetFileName(ModelPath)}");
+
+            try
+            {
+                var config = new CameraConfig
+                {
+                    Host       = CameraHost.Trim(),
+                    Username   = Username.Trim(),
+                    Password   = Password,
+                    Port       = Port,
+                    StreamPath = StreamPath.Trim()
+                };
+                var rtspUrl = config.BuildRtspUrl();
+                await _detectionService.StartAsync(rtspUrl);
+            }
+            catch (Exception ex)
+            {
+                IsDetecting = false;
+                AppendLog($"[AI] Error: {ex.Message}");
+                OnPropertyChanged(nameof(HasDiagnostics));
+                NotifyCommands();
+            }
+        }
+
+        private void ExecuteStopDetection()
+        {
+            if (!IsDetecting) return;
+            _detectionService.Stop();
+            IsDetecting    = false;
+            DetectionCount = 0;
+            AppendLog("[AI] Detection stopped.");
             NotifyCommands();
         }
 
@@ -442,12 +540,36 @@ namespace StarLinkPOC.ViewModels
             StatusColor   = color;
         }
 
+        // ──────────────────────────────────────────────────────────────
+        //  Detection Service Events
+        // ──────────────────────────────────────────────────────────────
+
+        private void OnDetectionsUpdated(object? sender, List<Detection> detections) =>
+            Dispatch(() =>
+            {
+                DetectionCount = detections.Count;
+                DetectionsReady?.Invoke(this, detections);
+            });
+
+        private void OnDetectionStatus(object? sender, string msg) =>
+            Dispatch(() =>
+            {
+                AppendLog($"[AI] {msg}");
+                OnPropertyChanged(nameof(HasDiagnostics));
+            });
+
+        // ──────────────────────────────────────────────────────────────
+        //  Helpers (extended)
+        // ──────────────────────────────────────────────────────────────
+
         private void NotifyCommands()
         {
             ConnectCommand.NotifyCanExecuteChanged();
             DisconnectCommand.NotifyCanExecuteChanged();
             StartRecordingCommand.NotifyCanExecuteChanged();
             StopRecordingCommand.NotifyCanExecuteChanged();
+            StartDetectionCommand.NotifyCanExecuteChanged();
+            StopDetectionCommand.NotifyCanExecuteChanged();
         }
     }
 
